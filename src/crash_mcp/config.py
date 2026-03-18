@@ -18,7 +18,9 @@ class Config:
     
     # Extensions Configuration
     # Auto-load all extensions from CRASH_EXTENSION_PATH (true/false)
-    CRASH_EXTENSION_LOAD = os.getenv("CRASH_EXTENSION_LOAD", "true").lower() == "true"
+    CRASH_EXTENSION_LOAD = os.getenv("CRASH_EXTENSION_LOAD", "false").lower() == "false"
+    CRASH_NO_BANNER = os.getenv("CRASH_NO_BANNER", "false").lower() == "false"
+
     # Extension search paths (colon-separated), maps to crash's CRASH_EXTENSIONS env var
     # Default includes project lib/crash/extensions
     CRASH_EXTENSION_PATH = os.getenv("CRASH_EXTENSION_PATH", "")

@@ -49,6 +49,7 @@ class CrashSession(BaseSession):
         super().__init__(dump_path, kernel_path, final_binary_path, remote_host, remote_user, ssh_key)
         
         self.crash_args = crash_args or []
+        logger.info('crash_args: {}'.format(self.crash_args))
 
     def _auto_select_binary(self, dump_path, kernel_path) -> Tuple[str, Optional[str]]:
         """Auto-select crash binary based on vmcore architecture."""
@@ -76,7 +77,8 @@ class CrashSession(BaseSession):
         if Config.CRASH_EXTENSION_LOAD:
             args.append("-x")
         # Add -s to suppress startup banner/copyright for cleaner parsing
-        args.append("-s")
+        if Config.CRASH_NO_BANNER:
+            args.append("-s")
         # Add custom crash args
         args.extend(self.crash_args)
         if self.kernel_path:
@@ -84,15 +86,15 @@ class CrashSession(BaseSession):
         args.append(self.dump_path)
         return args
 
-    def _post_start_init(self):
+    def _post_start_init(self, timeout=10):
         """
         Handle post-start initialization (wait for prompt, configure session).
         """
         # Expect the initial prompt
-        logger.debug(f"Waiting for prompt: {self.PROMPT}")
+        logger.info(f"Waiting for prompt: {self.PROMPT}")
         try:
-            self._process.expect(self.PROMPT, timeout=10)
-            logger.debug("Initial prompt matched.")
+            self._process.expect(self.PROMPT, timeout=timeout)
+            logger.info("Initial prompt matched.")
         except pexpect.TIMEOUT:
             logger.error(f"Timeout waiting for startup prompt. Output found so far: {repr(self._process.before)}")
             raise

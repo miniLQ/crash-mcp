@@ -47,7 +47,7 @@ class BaseSession:
 
     from typing import Callable
 
-    def start(self, timeout: int = 30, on_progress: Optional[Callable[[float, str], None]] = None):
+    def start(self, timeout: int = 120, on_progress: Optional[Callable[[float, str], None]] = None):
         """
         Starts the interactive session.
         """
@@ -110,32 +110,32 @@ class BaseSession:
                 
                 # [Fix for Hang] Use PopenSpawn + script wrapper to avoid pty.fork() threading deadlocks
                 # and ensure TTY behavior (line buffering) for interactive tools like prompt.
-                try:
-                    from pexpect.popen_spawn import PopenSpawn
-                    import shlex
+                #try:
+                #    from pexpect.popen_spawn import PopenSpawn
+                #    import shlex
                     
-                    # Construct command string for script
-                    real_cmd_list = [self.binary_path] + args
-                    real_cmd_str = shlex.join(real_cmd_list)
+                #    # Construct command string for script
+                #    real_cmd_list = [self.binary_path] + args
+                #    real_cmd_str = shlex.join(real_cmd_list)
                     
                     # script -q -c "cmd..." /dev/null
                     # Note: script parameters can vary by platform, but -q -c is standard on Linux
-                    wrapper_cmd = ["script", "-q", "-c", real_cmd_str, "/dev/null"]
+                #    wrapper_cmd = ["script", "-q", "-f", "-c", real_cmd_str, "/dev/null"]
                     
-                    logger.info(f"Spawning via PopenSpawn with script wrapper: {wrapper_cmd}")
-                    self._process = PopenSpawn(wrapper_cmd, encoding='utf-8', timeout=timeout, env=env)
+                #    logger.info(f"Spawning via PopenSpawn with script wrapper: {wrapper_cmd}")
+                #    self._process = PopenSpawn(wrapper_cmd, encoding='utf-8', timeout=timeout, env=env)
                     
-                except ImportError:
-                    logger.warning("PopenSpawn not found, falling back to pexpect.spawn (unsafe in threaded env)")
+                #except ImportError:
+                #    logger.warning("PopenSpawn not found, falling back to pexpect.spawn (unsafe in threaded env)")
                     # Remove maxread=65536 which might be causing issues in this environment
-                    self._process = pexpect.spawn(self.binary_path, args, encoding='utf-8', timeout=timeout, env=env)
+                self._process = pexpect.spawn(self.binary_path, args, encoding='utf-8', timeout=timeout, env=env)
                     
                 logger.debug(f"Process spawned. PID: {self._process.pid}")
             
             # Post-start initialization (wait for prompt, set options)
-            logger.debug("Calling _post_start_init()...")
-            self._post_start_init()
-            logger.debug("_post_start_init() completed.")
+            logger.info("Calling _post_start_init()...")
+            self._post_start_init(timeout=timeout)
+            logger.info("_post_start_init() completed.")
             
             logger.info(f"{self.__class__.__name__} started successfully.")
             
@@ -145,13 +145,13 @@ class BaseSession:
                 logger.error(f"Output before failure: {self._process.before}")
             raise RuntimeError(f"Failed to start session: {e}")
 
-    def _post_start_init(self):
+    def _post_start_init(self, timeout):
         """
         Hook for post-start initialization (e.g., waiting for prompt).
         Can be overridden by subclasses.
         """
         if self.PROMPT:
-            self._process.expect(self.PROMPT)
+            self._process.expect(self.PROMPT, timeout)
 
     def execute_command(self, command: str, timeout: int = 60, truncate: bool = True) -> str:
         """
