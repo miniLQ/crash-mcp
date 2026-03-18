@@ -1,4 +1,5 @@
 import logging
+import pexpect
 import os
 from pathlib import Path
 from typing import Optional, List, Tuple
@@ -225,3 +226,5 @@ class CrashSession(BaseSession):
         
         # Delegate to default strategy for other commands
         return super()._smart_truncate(output, command)
+
+

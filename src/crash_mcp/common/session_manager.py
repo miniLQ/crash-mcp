@@ -142,9 +142,25 @@ class SessionManager:
             logger.info(f"Removed session {session_id}")
     
     def _compute_md5(self, path: str) -> str:
-        """Compute vmcore MD5 (first 64MB for speed)."""
+        """Compute a stable session hash for a vmcore path or split dump specification."""
         md5 = hashlib.md5()
         chunk_size = 64 * 1024 * 1024  # 64MB
+
+        if "@" in path and "," in path:
+            try:
+                for segment in path.split(','):
+                    segment = segment.strip()
+                    if not segment:
+                        continue
+                    path_part = segment.split('@', 1)[0].strip()
+                    with open(path_part, 'rb') as f:
+                        md5.update(path_part.encode())
+                        md5.update(f.read(min(chunk_size, 4 * 1024 * 1024)))
+                return md5.hexdigest()[:16]
+            except IOError as e:
+                logger.warning(f"Could not read split dump segment for MD5: {e}")
+                return hashlib.md5(path.encode()).hexdigest()[:16]
+
         try:
             with open(path, 'rb') as f:
                 data = f.read(chunk_size)
@@ -152,5 +168,4 @@ class SessionManager:
             return md5.hexdigest()[:16]
         except IOError as e:
             logger.warning(f"Could not read vmcore for MD5: {e}")
-            # Fallback to path hash
             return hashlib.md5(path.encode()).hexdigest()[:16]

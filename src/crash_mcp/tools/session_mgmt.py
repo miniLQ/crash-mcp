@@ -4,7 +4,8 @@ import re
 import logging
 import datetime
 import subprocess
-from typing import Optional
+import shlex
+from typing import Optional, List
 from mcp.server.fastmcp import FastMCP, Context
 
 from crash_mcp.common.vmcore_discovery import CrashDiscovery
@@ -16,6 +17,32 @@ import crash_mcp.context as context
 
 logger = logging.getLogger("crash-mcp")
 
+
+def _parse_crash_args(crash_args: Optional[str | List[str]]) -> List[str]:
+    """Parse extra crash arguments without breaking comma-separated dump specs."""
+    if not crash_args:
+        return []
+    if isinstance(crash_args, list):
+        return [str(arg) for arg in crash_args if str(arg).strip()]
+    return shlex.split(crash_args)
+
+
+def _validate_dump_input(vmcore_path: Optional[str], dump_spec: Optional[str]) -> Optional[str]:
+    """Validate either a single vmcore path or a split-dump specification."""
+    if dump_spec:
+        for part in dump_spec.split(','):
+            segment = part.strip()
+            if not segment:
+                continue
+            path_part = segment.split('@', 1)[0].strip()
+            if not os.path.exists(path_part):
+                return f"Dump segment not found locally at {path_part}."
+        return None
+
+    if vmcore_path and os.path.exists(vmcore_path):
+        return None
+
+    return f"Dump file not found locally at {vmcore_path} and no remote host specified."
 
 
 
@@ -84,82 +111,87 @@ def list_crash_dumps(search_path: str = Config.CRASH_SEARCH_PATH) -> str:
         return json_response("error", error=f"Error scanning for dumps: {str(e)}")
 
 
-def open_vmcore_session(ctx: Context, vmcore_path: str, vmlinux_path: str, 
+def open_vmcore_session(ctx: Context, vmcore_path: Optional[str] = None, vmlinux_path: str = "",
                   ssh_host: Optional[str] = None, ssh_user: Optional[str] = None,
-                  crash_args: Optional[str] = None) -> str:
+                  crash_args: Optional[str] = None, dump_spec: Optional[str] = None) -> str:
     """Open vmcore dump for kernel analysis. Returns session_id for use in other tools.
     """
-    ctx.info(f"Start session requested for {vmcore_path}")
-    ctx.report_progress(0, 100, "Initializing session request")
-    
-    args_list = crash_args.split(',') if crash_args else []
-    
-    # Validation
-    if not ssh_host and not os.path.exists(vmcore_path):
-        return json_response("error", error=f"Dump file not found locally at {vmcore_path} and no remote host specified.")
+    dump_target = dump_spec or vmcore_path
+    if not dump_target:
+        return json_response("error", error="Either vmcore_path or dump_spec is required.")
 
-    # Check version match
+    ctx.info(f"Start session requested for {dump_target}")
+    ctx.report_progress(0, 100, "Initializing session request")
+
+    args_list = _parse_crash_args(crash_args)
+
+    if not ssh_host:
+        validation_error = _validate_dump_input(vmcore_path, dump_spec)
+        if validation_error:
+            return json_response("error", error=validation_error)
+
     version_warning = ""
-    if not ssh_host and os.path.exists(vmcore_path) and os.path.exists(vmlinux_path):
+    if not ssh_host and vmcore_path and not dump_spec and os.path.exists(vmcore_path) and os.path.exists(vmlinux_path):
         ctx.report_progress(10, 100, "Checking kernel version match")
         match_result = CrashDiscovery.check_version_match(vmcore_path, vmlinux_path)
         if not match_result.get('match') and match_result.get('vmcore_version'):
             version_warning = match_result['message']
 
-    # Use SessionManager for deduplication
     ctx.report_progress(15, 100, "Checking existing sessions")
-    session_id, info, is_new = context.session_manager.get_or_create(vmcore_path, vmlinux_path)
-    
+    session_id, info, is_new = context.session_manager.get_or_create(dump_target, vmlinux_path)
+
     if not is_new:
-        # Session already exists for this vmcore
         if session_id in context.sessions:
-            context.session_manager.acquire(session_id)  # Increment ref count
+            context.session_manager.acquire(session_id)
             context.last_session_id = session_id
             result = {
                 "session_id": session_id,
             }
             if version_warning:
                 result["warning"] = version_warning
-            
+            if dump_spec:
+                result["dump_mode"] = "split"
+                result["drgn_enabled"] = False
+
             ctx.report_progress(100, 100, "Session ready")
             return json_response("success", result)
-        # Session was registered but not started (shouldn't happen normally)
-        # Fall through to create it
-    
-    logger.info(f"Starting Session {session_id} for {vmcore_path}")
-    
+
+    logger.info(f"Starting Session {session_id} for {dump_target}")
+
     try:
         ctx.report_progress(20, 100, "Preparing analysis environment")
         session = UnifiedSession(
-            vmcore_path, vmlinux_path, 
+            dump_target, vmlinux_path,
             remote_host=ssh_host, remote_user=ssh_user,
             crash_args=args_list,
-            workdir=info.workdir  # Pass workdir to session
+            workdir=info.workdir,
+            enable_drgn=not bool(dump_spec),
         )
-        
+
         def on_progress_cb(p: float, msg: str):
-            # Scale session progress (0-100) to overall progress (20-100)
             scaled = 20 + (p / 100.0) * 80
             ctx.report_progress(scaled, 100, msg)
-            
+
         session.start(on_progress=on_progress_cb)
-        
+
         context.sessions[session_id] = session
-        context.session_manager.acquire(session_id)  # Increment ref count
+        context.session_manager.acquire(session_id)
         context.last_session_id = session_id
-        
+
         result = {
             "session_id": session_id,
         }
         if version_warning:
             result["warning"] = version_warning
-            
+        if dump_spec:
+            result["dump_mode"] = "split"
+            result["drgn_enabled"] = False
+
         return json_response("success", result)
     except Exception as e:
         logger.error(f"Failed to start session: {e}")
         context.session_manager.remove_session(session_id)
         return json_response("error", error=f"Failed to start session: {str(e)}")
-
 
 def _detect_crash_error_hint(command: str, output: str) -> Optional[str]:
     """Analyze failed crash command and return a helpful hint."""
@@ -379,4 +411,8 @@ def register(mcp: FastMCP):
     mcp.tool()(logged_tool(run_drgn_command))
     # mcp.tool()(run_pykdump_command)  # Hidden: use run_crash_command with pykdump extensions
     mcp.tool()(logged_tool(close_vmcore_session))
+
+
+
+
 
